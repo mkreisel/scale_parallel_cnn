@@ -34,7 +34,7 @@ class Net(nn.Module):
         kernels = self.kernel_generator(m1)
         large_kernels = kernels[-1,:256].view(4, 1, 8, 8)
         medium_kernels = kernels[-1, 256:320].view(4, 1, 4, 4)
-        small_kernels = kernels[-1,320:336].view(4, 1, 2, 2)
+        small_kernels = kernels[-1,320:].view(4, 1, 2, 2)
         c1_prime = torch.nn.functional.conv2d(x, large_kernels, stride=4)
         c2_prime = torch.nn.functional.conv2d(x, medium_kernels, stride=2)
         c3_prime = torch.nn.functional.conv2d(x, small_kernels)
