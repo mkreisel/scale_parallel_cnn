@@ -6,7 +6,7 @@ class DownUpBlock(nn.Module):
         super().__init__()
         self.bn = nn.BatchNorm2d(ni)
         self.conv1 = nn.Conv2d(ni, nf, size, stride)
-        self.deconv1 = nn.Conv2dTranspose(ni, nf, size, stride)
+        self.deconv1 = nn.ConvTranspose2d(ni, nf, size, stride)
         self.drop = nn.Dropout(drop_p, inplace=True) if drop_p else None
 
     def forward(self, x):
