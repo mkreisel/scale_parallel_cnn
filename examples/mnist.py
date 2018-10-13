@@ -6,51 +6,58 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.conv_large1 = nn.Conv2d(1, 10, kernel_size=8, stride=4)
-        self.conv_medium1 = nn.Conv2d(1, 10, kernel_size=4, stride=2)
-        self.conv_small1 = nn.Conv2d(1, 10, kernel_size=2)
-        self.conv_large_1x1 = nn.Conv2d(10, 10, kernel_size=1)
-        self.conv_medium_1x1 = nn.Conv2d(10, 10, kernel_size=1)
-        self.conv_small_1x1 = nn.Conv2d(10, 10, kernel_size=1)
-        self.conv_large_1x1_2 = nn.Conv2d(4, 4, kernel_size=1)
-        self.conv_medium_1x1_2 = nn.Conv2d(4, 4, kernel_size=1)
-        self.conv_small_1x1_2 = nn.Conv2d(4, 4, kernel_size=1)
-        self.kernel_generator = nn.Linear(270, 336)
-        self.fc1 = nn.Linear(378, 10)
-        self.upper_head =nn.Linear(270, 10)
-        self.lower_head =nn.Linear(108, 10)
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+class DownUpBlock(nn.Module):
+    def __init__(self, ni, nf, size, stride=1, drop_p=0.0):
+        super().__init__()
+        self.bn = nn.BatchNorm2d(nf)
+        self.conv1 = nn.Conv2d(ni, nf, size, stride)
+        self.deconv1 = nn.ConvTranspose2d(nf, nf, size, stride)
+        self.drop = nn.Dropout(drop_p, inplace=True) if drop_p else None
 
     def forward(self, x):
-        c1 = F.relu(self.conv_large1(x))
-        c2 = F.relu(self.conv_medium1(x))
-        c3 = F.relu(self.conv_small1(x))
-        c1 = F.relu(F.max_pool2d(self.conv_large_1x1(c1), 2))
-        c2 = F.relu(F.max_pool2d(self.conv_medium_1x1(c2), 4))
-        c3 = F.relu(F.max_pool2d(self.conv_small_1x1(c3), 8))
-        m1 = torch.cat([c1, c2, c3], dim=1).view(-1, 270)
-        kernels = self.kernel_generator(m1)
-        large_kernels = kernels[-1,:256].view(4, 1, 8, 8)
-        medium_kernels = kernels[-1, 256:320].view(4, 1, 4, 4)
-        small_kernels = kernels[-1,320:].view(4, 1, 2, 2)
-        c1_prime = F.relu(torch.nn.functional.conv2d(x, large_kernels, stride=4))
-        c2_prime = F.relu(torch.nn.functional.conv2d(x, medium_kernels, stride=2))
-        c3_prime = F.relu(torch.nn.functional.conv2d(x, small_kernels))
-        c1_prime = F.relu(F.max_pool2d(self.conv_large_1x1_2(c1_prime), 2))
-        c2_prime = F.relu(F.max_pool2d(self.conv_medium_1x1_2(c2_prime), 4))
-        c3_prime = F.relu(F.max_pool2d(self.conv_small_1x1_2(c3_prime), 8))
-        m2 = torch.cat([c1_prime, c2_prime, c3_prime], dim=1).view(-1, 108)
-        return F.log_softmax(self.fc1(torch.cat([m1,m2], dim=1)), dim=1), F.log_softmax(self.upper_head(m1), dim=1), F.log_softmax(self.lower_head(m2), dim=1)
+        x = F.relu(self.conv1(x), inplace=True)
+        x = F.relu(self.deconv1(x), inplace=True)
+        if self.drop: x = self.drop(x)
+        x = self.bn(x)
+        return x
+
+class ScaleParallelBlock(nn.Module):
+    def __init__(self, ni, nf, sizes, stride, drop_p=0.0):
+        super().__init__()
+        self.conv_layers = []
+        for i in range(len(sizes)):
+            self.conv_layers.append(DownUpBlock(ni, nf, sizes[i], stride, drop_p))
+
+    def forward(self, x):
+        outputs = [layer(x) for layer in self.conv_layers]
+        return torch.cat(outputs)
+
+class ScaleParallelNet1(nn.Module):
+    def __init__(self, ni=1, nf=20, sizes=[2,4,8,12], stride=1, drop_p=0.0):
+        super().__init__()
+        self.parallel_block = ScaleParallelBlock(ni, nf, sizes, stride, drop_p)
+        self.conv1x1 = nn.Conv2d(80, 10, 1, 1)
+        self.linear = nn.Linear(10240, 10)
+
+    def forward(self, x):
+        x = self.parallel_block(x)
+        x = x.view(-1, 60, 32, 32)
+        x = self.conv1x1(x)
+        x = F.relu(x, inplace=True)
+        x = x.view(-1, 10240)
+        x = F.log_softmax(self.linear(x), dim=1)
+        return x
 
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
-        output, upper_out, lower_out = model(data)
-        loss = F.nll_loss(output, target) + F.nll_loss(upper_out, target) + F.nll_loss(lower_out, target)
+        output = model(data)
+        loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -65,8 +72,8 @@ def test(args, model, device, test_loader):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
-            output, upper_out, lower_out = model(data)
-            test_loss += F.nll_loss(lower_out, target, reduction='sum').item() + F.nll_loss(upper_out, target, reduction='sum').item() + F.nll_loss(output, target, reduction='sum').item() # sum up batch loss
+            output = model(data)
+            test_loss += F.nll_loss(output, target, reduction='sum').item()
             pred = output.max(1, keepdim=True)[1] # get the index of the max log-probability
             correct += pred.eq(target.view_as(pred)).sum().item()
 
@@ -117,7 +124,8 @@ def main():
         batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
 
-    model = Net().to(device)
+    model = ScaleParallelNet1().to(device)
+    print("Total trainable params: %i" % count_parameters(model))
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     print(sum(p.numel() for p in model.parameters() if p.requires_grad))
     for epoch in range(1, args.epochs + 1):
