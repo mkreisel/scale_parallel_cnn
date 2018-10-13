@@ -26,7 +26,7 @@ class ScaleParallelBlock(nn.Module):
         return torch.cat(outputs)
 
 class ScaleParallelNet1(nn.Module):
-    def __init__(self, ni=1, nf=20, sizes=[4,8,12], stride=1, drop_p=0.0):
+    def __init__(self, ni=3, nf=20, sizes=[4,8,12], stride=1, drop_p=0.0):
         super().__init__()
         self.parallel_block = ScaleParallelBlock(ni, nf, sizes, stride, drop_p)
         self.conv1x1 = nn.Conv2d(60, 10, 1, 1)
