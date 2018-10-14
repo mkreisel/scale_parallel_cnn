@@ -40,12 +40,12 @@ class ScaleParallelUnit(nn.Module):
 class ScaleParallelBlock(nn.Module):
     def __init__(self, ni=1, nf=40, sizes=[4, 12], num_units=1, stride=1, layer_drop=0.0):
         super().__init__()
-        self.parallel_units = nn.ModuleList()
+        self.parallel_units = []
         curr_ni = ni
         for i in range(num_units):
             self.parallel_units.append(ScaleParallelUnit(curr_ni, nf, sizes, stride, layer_drop))
             curr_ni = nf*len(sizes) + curr_ni
-        self.full_block = nn.Sequential(self.parallel_units)
+        self.full_block = nn.Sequential(*self.parallel_units)
         self.output_size = curr_ni
 
     def forward(self, x):
