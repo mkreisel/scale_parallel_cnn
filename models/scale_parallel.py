@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
 
 class DownUpBlock(nn.Module):
     def __init__(self, ni, nf, size, stride=1, drop_p=0.0):
